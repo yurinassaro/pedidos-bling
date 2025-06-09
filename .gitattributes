@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.blade.php diff=html
+*.css diff=css
+*.html diff=html
+*.md diff=markdown
+*.php diff=php
+
+/.github export-ignore
+CHANGELOG.md export-ignore
+.styleci.yml export-ignore
+
+# ========== Line endings ==========
+# Todos os arquivos de texto em LF no repositório
+* text=auto eol=lf
+
+# Se tiver scripts .bat que precisam de CRLF, declare à parte:
+*.bat text eol=crlf
