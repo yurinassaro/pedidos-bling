@@ -277,282 +277,315 @@ class BlingService
 //     return $orders;
 // }
 
-public function getOrdersWithProductImages($startDate, $endDate)
-{
-    // Garante que o token esteja atualizado antes da requisição
-    if (!$this->hasValidToken()) {
-        $this->refreshToken();
-    }
-
-    $accessToken = $this->getCurrentAccessToken();
-
-    // Buscar pedidos
-    $response = Http::withToken($accessToken)
-        ->get("{$this->baseUrl}/pedidos/vendas", [
-            'dataInicial' => $startDate, // Data inicial no formato YYYY-MM-DD
-            'dataFinal' => $endDate,     // Data final no formato YYYY-MM-DD
-            'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
+    public function getOrdersWithProductImages($startDate, $endDate)
+    {
+        $accessToken = $this->getCurrentAccessToken();
+        $allOrders = [];
+        $page = 1;
+        $hasMorePages = true;
+        
+        Log::info('Iniciando busca de pedidos', [
+            'startDate' => $startDate,
+            'endDate' => $endDate
         ]);
 
-    
-    if ($response->failed()) {
-        Log::error('Erro ao buscar pedidos', ['response' => $response->body()]);
-        throw new \Exception('Erro ao buscar pedidos');
-    }
+        // Buscar todos os pedidos com paginação
+        while ($hasMorePages) {
+            $response = Http::withToken($accessToken)
+                ->get("{$this->baseUrl}/pedidos/vendas", [
+                    'pagina' => $page,
+                    'limite' => 100, // Máximo permitido pela API
+                    'criterio' => 'dataEmissao',
+                    'filters' => "dataEmissao[{$startDate} TO {$endDate}] situacao[0]",
+                ]);
 
-    $orders = $response->json('data') ?? [];
-    // dd($orders);
-    $allNumbers = array_map('intval', array_column($orders, 'numero'));
-    sort($allNumbers);
-    
-    $missingSequence = [];
-    $lastNumber = null;
+            if ($response->failed()) {
+                Log::error('Erro ao buscar pedidos', [
+                    'page' => $page,
+                    'response' => $response->body(),
+                    'status' => $response->status()
+                ]);
+                throw new \Exception('Erro ao buscar pedidos');
+            }
 
-    foreach ($allNumbers as $currentNumber) {
-        if ($lastNumber !== null && $currentNumber !== $lastNumber + 1) {
-            for ($i = $lastNumber + 1; $i < $currentNumber; $i++) {
-                $missingSequence[] = $i;
+            $responseData = $response->json();
+            $orders = $responseData['data'] ?? [];
+            
+            Log::info("Página {$page} processada", [
+                'quantidade' => count($orders),
+                'total_ate_agora' => count($allOrders) + count($orders)
+            ]);
+
+            // Adicionar pedidos desta página ao array total
+            $allOrders = array_merge($allOrders, $orders);
+
+            // Verificar se há mais páginas
+            $hasMorePages = !empty($orders) && count($orders) == 100;
+            $page++;
+
+            // Delay para evitar rate limit
+            if ($hasMorePages) {
+                usleep(200000); // 200ms entre requisições
             }
         }
-        $lastNumber = $currentNumber;
+
+        Log::info('Total de pedidos encontrados', [
+            'total' => count($allOrders)
+        ]);
+
+        // Processar imagens (com limite para evitar timeout)
+        $missingSequence = [];
+        $count = 0;
+        $maxToProcess = 200; // Limite para processar por vez
+
+        foreach ($allOrders as &$order) {
+            if ($count >= $maxToProcess) {
+                Log::warning("Limite de processamento atingido: {$maxToProcess} pedidos");
+                break;
+            }
+
+            if ($order['id']) {
+                // Buscar detalhes do pedido com delay
+                usleep(100000); // 100ms entre requisições
+                
+                $pedidoResponse = Http::withToken($accessToken)
+                    ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}");
+
+                if ($pedidoResponse->failed()) {
+                    Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
+                        'response' => $pedidoResponse->body()
+                    ]);
+                    continue;
+                }
+
+                $pedidoData = $pedidoResponse->json('data');
+                
+                // Processar itens do pedido
+                foreach ($pedidoData['itens'] ?? [] as $itemIndex => $item) {
+                    if (isset($item['produto']['id'])) {
+                        $produtoId = $item['produto']['id'];
+                        
+                        // Buscar produto com delay
+                        usleep(100000); // 100ms entre requisições
+                        
+                        $produtoResponse = Http::withToken($accessToken)
+                            ->get("{$this->baseUrl}/produtos/{$produtoId}");
+                        
+                        if ($produtoResponse->ok()) {
+                            $produtoData = $produtoResponse->json('data');
+                            
+                            $imagemLink = isset($produtoData['midia']['imagens']['internas'][0]['link'])
+                                ? $produtoData['midia']['imagens']['internas'][0]['link']
+                                : null;
+
+                            $order['itens'][$itemIndex]['imagem'] = $imagemLink;
+                            $order['itens'][$itemIndex]['descricao'] = $item['descricao'];
+                            $order['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
+                        }
+                    }
+                }
+
+                $order['observacoesInternas'] = $pedidoData['observacoesInternas'] ?? null;
+            }
+            
+            $count++;
+        }
+
+        // Verificar sequência de números
+        if (!empty($allOrders)) {
+            $numeros = array_column($allOrders, 'numero');
+            sort($numeros);
+            
+            $primeiro = $numeros[0];
+            $ultimo = end($numeros);
+            
+            for ($i = $primeiro; $i <= $ultimo; $i++) {
+                if (!in_array($i, $numeros)) {
+                    $missingSequence[] = $i;
+                }
+            }
+        }
+
+        // Ordenar por número
+        usort($allOrders, function ($a, $b) {
+            return $a['numero'] <=> $b['numero'];
+        });
+
+        return [
+            'orders' => $allOrders, 
+            'missingSequence' => $missingSequence,
+            'total_encontrados' => count($allOrders),
+            'processados_com_imagem' => $count
+        ];
     }
 
-    // Tentar recuperar pedidos que estão faltando
-    foreach ($missingSequence as $missingNumber) {
-        $pedidoResponse = Http::withToken($accessToken)
+
+    public function getOrdersWithProductImagesBackup($startDate, $endDate)
+    {
+        // Garante que o token esteja atualizado antes da requisição
+        if (!$this->hasValidToken()) {
+            $this->refreshToken();
+        }
+
+        $accessToken = $this->getCurrentAccessToken();
+
+        // Buscar pedidos
+        $response = Http::withToken($accessToken)
             ->get("{$this->baseUrl}/pedidos/vendas", [
-                'numero' => $missingNumber,
-                'expand' => 'itens.produto'
+                'filters' => "dataEmissao[{$startDate} TO {$endDate}] situacao[0]",
+                'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
             ]);
 
-        if ($pedidoResponse->ok()) {
-            $pedidoData = $pedidoResponse->json('data');
-            if (!empty($pedidoData)) {
-                $orders[] = $pedidoData[0];
-            }
-        } else {
-            Log::error("Erro ao buscar pedido manualmente: {$missingNumber}", [
-                'response' => $pedidoResponse->body()
-            ]);
+        if ($response->failed()) {
+            Log::error('Erro ao buscar pedidos', ['response' => $response->body()]);
+            throw new \Exception('Erro ao buscar pedidos');
         }
-    }
 
-    
-    foreach ($orders as &$order) {
-        if (isset($order['id'])) {
-            $pedidoResponse = Http::withToken($accessToken)
-                ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}", [
-                    'expand' => 'itens.produto'
-                ]);
+        $orders = $response->json('data') ?? [];
+        //dd($orders);
+        $limit = 0; // Defina o limite de pedidos
+        $count = 0; // Inicialize o contador
 
-            if ($pedidoResponse->failed()) {
-                Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
-                    'response' => $pedidoResponse->body()
-                ]);
-                continue;
-            }
+        $allNumbers = array_map('intval', array_column($orders, 'numero')); // Converta os números para inteiros
+        sort($allNumbers); // Ordene os números
 
-            $pedidoData = $pedidoResponse->json('data');
-            
-            foreach ($pedidoData['itens'] as $itemIndex => $item) {
-                if (isset($item['produto']['id'])) {
-                    $produtoId = $item['produto']['id'];
-                    $produtoResponse = Http::withToken($accessToken)
-                        ->get("{$this->baseUrl}/produtos/{$produtoId}");
+        $missingSequence = [];
+        $lastNumber = null;
 
-                    if ($produtoResponse->ok()) {
-                        $produtoData = $produtoResponse->json('data');
-                        $imagemLink = $produtoData['midia']['imagens']['internas'][0]['link'] ?? null;
-                        $order['itens'][$itemIndex]['imagem'] = $imagemLink;
-                        $order['itens'][$itemIndex]['descricao'] = $item['descricao'];
-                        $order['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
-                    } else {
-                        Log::error("Erro ao buscar produto {$produtoId}", [
-                            'response' => $produtoResponse->body()
-                        ]);
-                        $order['itens'][$itemIndex]['imagem'] = null;
-                    }
+        // Verifica a sequência diretamente nos números disponíveis
+        foreach ($allNumbers as $currentNumber) {
+            if ($lastNumber !== null && $currentNumber !== $lastNumber + 1) {
+                for ($i = $lastNumber + 1; $i < $currentNumber; $i++) {
+                    $missingSequence[] = $i; // Adiciona os números faltantes
                 }
             }
-            
-            $order['observacoesInternas'] = $pedidoData['observacoesInternas'] ?? null;
+            $lastNumber = $currentNumber; // Atualiza o último número
         }
-    }
-    
-    usort($orders, function ($a, $b) {
-        return $a['numero'] <=> $b['numero'];
-    });
 
-    return ['orders' => $orders, 'missingSequence' => $missingSequence];
-}
-
-
-public function getOrdersWithProductImagesBackup($startDate, $endDate)
-{
-    // Garante que o token esteja atualizado antes da requisição
-    if (!$this->hasValidToken()) {
-        $this->refreshToken();
-    }
-
-    $accessToken = $this->getCurrentAccessToken();
-
-    // Buscar pedidos
-    $response = Http::withToken($accessToken)
-        ->get("{$this->baseUrl}/pedidos/vendas", [
-            'filters' => "dataEmissao[{$startDate} TO {$endDate}] situacao[0]",
-            'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
-        ]);
-
-    if ($response->failed()) {
-        Log::error('Erro ao buscar pedidos', ['response' => $response->body()]);
-        throw new \Exception('Erro ao buscar pedidos');
-    }
-
-    $orders = $response->json('data') ?? [];
-    //dd($orders);
-    $limit = 0; // Defina o limite de pedidos
-    $count = 0; // Inicialize o contador
-
-    $allNumbers = array_map('intval', array_column($orders, 'numero')); // Converta os números para inteiros
-    sort($allNumbers); // Ordene os números
-
-    $missingSequence = [];
-    $lastNumber = null;
-
-    // Verifica a sequência diretamente nos números disponíveis
-    foreach ($allNumbers as $currentNumber) {
-        if ($lastNumber !== null && $currentNumber !== $lastNumber + 1) {
-            for ($i = $lastNumber + 1; $i < $currentNumber; $i++) {
-                $missingSequence[] = $i; // Adiciona os números faltantes
+        // Se houver números faltantes, marque os pedidos
+        if (!empty($missingSequence)) {
+            foreach ($orders as &$order) {
+                $order['faltou'] = true;
             }
         }
-        $lastNumber = $currentNumber; // Atualiza o último número
-    }
 
-    // Se houver números faltantes, marque os pedidos
-    if (!empty($missingSequence)) {
+        
         foreach ($orders as &$order) {
-            $order['faltou'] = true;
-        }
-    }
+            if (isset($order['id'])) {
+                // Buscar detalhes do pedido individual
+                $pedidoResponse = Http::withToken($accessToken)
+                    ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}", [
+                        'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
+                    ]);
 
-    
-    foreach ($orders as &$order) {
-        if (isset($order['id'])) {
-            // Buscar detalhes do pedido individual
-            $pedidoResponse = Http::withToken($accessToken)
-                ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}", [
-                    'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
-                ]);
+                if ($pedidoResponse->failed()) {
+                    Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
+                        'response' => $pedidoResponse->body()
+                    ]);
+                    continue;
+                }
 
-            if ($pedidoResponse->failed()) {
-                Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
-                    'response' => $pedidoResponse->body()
-                ]);
-                continue;
-            }
+                $pedidoData = $pedidoResponse->json('data');
 
-            $pedidoData = $pedidoResponse->json('data');
+                // Iterar sobre os itens do pedido para adicionar imagens e detalhes
+                foreach ($pedidoData['itens'] as $itemIndex => $item) {
+                    if (isset($item['produto']['id'])) {
+                        $produtoId = $item['produto']['id'];
 
-            // Iterar sobre os itens do pedido para adicionar imagens e detalhes
-            foreach ($pedidoData['itens'] as $itemIndex => $item) {
-                if (isset($item['produto']['id'])) {
-                    $produtoId = $item['produto']['id'];
+                        // Consultar o produto para buscar a imagem
+                        $produtoResponse = Http::withToken($accessToken)
+                            ->get("{$this->baseUrl}/produtos/{$produtoId}");
 
-                    // Consultar o produto para buscar a imagem
-                    $produtoResponse = Http::withToken($accessToken)
-                        ->get("{$this->baseUrl}/produtos/{$produtoId}");
+                        if ($produtoResponse->ok()) {
+                            $produtoData = $produtoResponse->json('data');
 
-                    if ($produtoResponse->ok()) {
-                        $produtoData = $produtoResponse->json('data');
+                            // Pegar o link da primeira imagem, se existir
+                            $imagemLink = $produtoData['midia']['imagens']['internas'][0]['link'] ?? null;
 
-                        // Pegar o link da primeira imagem, se existir
-                        $imagemLink = $produtoData['midia']['imagens']['internas'][0]['link'] ?? null;
-
-                        // Adicionar a imagem ao item do pedido
-                        $order['itens'][$itemIndex]['imagem'] = $imagemLink;
-                        $order['itens'][$itemIndex]['descricao'] = $item['descricao'];
-                        $order['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
-                    } else {
-                        Log::error("Erro ao buscar produto {$produtoId}", [
-                            'response' => $produtoResponse->body()
-                        ]);
-                        $order['itens'][$itemIndex]['imagem'] = null;
+                            // Adicionar a imagem ao item do pedido
+                            $order['itens'][$itemIndex]['imagem'] = $imagemLink;
+                            $order['itens'][$itemIndex]['descricao'] = $item['descricao'];
+                            $order['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
+                        } else {
+                            Log::error("Erro ao buscar produto {$produtoId}", [
+                                'response' => $produtoResponse->body()
+                            ]);
+                            $order['itens'][$itemIndex]['imagem'] = null;
+                        }
                     }
                 }
+
+                $order['observacoesInternas'] = $pedidoData['observacoesInternas'] ?? null;
             }
-
-            $order['observacoesInternas'] = $pedidoData['observacoesInternas'] ?? null;
         }
+
+    
+        // // Adicionar imagens dos produtos
+        // foreach ($orders as &$order) {
+        //     // if ($count >= $limit) {
+        //       //  break; // Interrompe o loop ao atingir o limite
+        //     //}
+            
+        //     if ($order['id']) {
+        //         // Buscar detalhes do pedido individual
+        //         $pedidoResponse = Http::withToken($accessToken)
+        //             ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}", [
+        //                 'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
+        //             ]);
+
+        //         if ($pedidoResponse->failed()) {
+        //             Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
+        //                 'response' => $pedidoResponse->body()
+        //             ]);
+        //             continue;
+        //         }
+
+        //         $pedidoData = $pedidoResponse->json('data');
+        //         //dd($pedidoData);// Iterar sobre os itens do pedido
+                
+        //         foreach ($pedidoData['itens'] as $itemIndex => $item) {
+        //             if (isset($item['produto']['id'])) {
+        //                 $produtoId = $item['produto']['id'];
+                        
+        //                 // Consultar o produto para buscar a imagem
+        //                 $produtoResponse = Http::withToken($accessToken)
+        //                     ->get("{$this->baseUrl}/produtos/{$produtoId}");
+        //                 //dd($produtoResponse);
+        //                 if ($produtoResponse->ok()) {
+        //                     $produtoData = $produtoResponse->json('data');
+        //                     //dd($produtoData);
+        //                     // Pegar o link da primeira imagem, se existir
+        //                     $imagemLink = isset($produtoData['midia']['imagens']['internas'][0]['link'])
+        //                     ? $produtoData['midia']['imagens']['internas'][0]['link']
+        //                     : null;
+        //                     // Adicionar a imagem ao item do pedido
+        //                     $orders[$count]['itens'][$itemIndex]['imagem'] = $imagemLink;
+        //                     $orders[$count]['itens'][$itemIndex]['descricao'] = $item['descricao'];
+        //                     $orders[$count]['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
+        //                     //dd($orders[$count]['itens'][$itemIndex]['descricao']);
+        //                 } else {
+        //                     Log::error("Erro ao buscar produto {$produtoId}", [
+        //                         'response' => $produtoResponse->body()
+        //                     ]);
+        //                     $orders[$count]['itens'][$itemIndex]['produto']['imagem'] = null;
+        //                 }
+        //             }
+        //         }
+                
+        //         $orders[$count]['observacoesInternas'] = $pedidoData['observacoesInternas'];
+        //     }
+            
+        //     $count++; // Incrementa o contador
+        // }
+        usort($orders, function ($a, $b) {
+            return $a['numero'] <=> $b['numero'];
+        });
+        return ['orders' => $orders, 'missingSequence' => $missingSequence];
+        //return $orders;
+
+    // dd(array_slice($orders, 0, 8));
+    // return array_slice($orders, 6, 13);
     }
-
-   
-    // // Adicionar imagens dos produtos
-    // foreach ($orders as &$order) {
-    //     // if ($count >= $limit) {
-    //       //  break; // Interrompe o loop ao atingir o limite
-    //     //}
-        
-    //     if ($order['id']) {
-    //         // Buscar detalhes do pedido individual
-    //         $pedidoResponse = Http::withToken($accessToken)
-    //             ->get("{$this->baseUrl}/pedidos/vendas/{$order['id']}", [
-    //                 'expand' => 'itens.produto' // Expande os detalhes dos produtos nos itens
-    //             ]);
-
-    //         if ($pedidoResponse->failed()) {
-    //             Log::error("Erro ao buscar detalhes do pedido {$order['id']}", [
-    //                 'response' => $pedidoResponse->body()
-    //             ]);
-    //             continue;
-    //         }
-
-    //         $pedidoData = $pedidoResponse->json('data');
-    //         //dd($pedidoData);// Iterar sobre os itens do pedido
-            
-    //         foreach ($pedidoData['itens'] as $itemIndex => $item) {
-    //             if (isset($item['produto']['id'])) {
-    //                 $produtoId = $item['produto']['id'];
-                    
-    //                 // Consultar o produto para buscar a imagem
-    //                 $produtoResponse = Http::withToken($accessToken)
-    //                     ->get("{$this->baseUrl}/produtos/{$produtoId}");
-    //                 //dd($produtoResponse);
-    //                 if ($produtoResponse->ok()) {
-    //                     $produtoData = $produtoResponse->json('data');
-    //                     //dd($produtoData);
-    //                     // Pegar o link da primeira imagem, se existir
-    //                     $imagemLink = isset($produtoData['midia']['imagens']['internas'][0]['link'])
-    //                     ? $produtoData['midia']['imagens']['internas'][0]['link']
-    //                     : null;
-    //                     // Adicionar a imagem ao item do pedido
-    //                     $orders[$count]['itens'][$itemIndex]['imagem'] = $imagemLink;
-    //                     $orders[$count]['itens'][$itemIndex]['descricao'] = $item['descricao'];
-    //                     $orders[$count]['itens'][$itemIndex]['quantidade'] = $item['quantidade'];
-    //                     //dd($orders[$count]['itens'][$itemIndex]['descricao']);
-    //                 } else {
-    //                     Log::error("Erro ao buscar produto {$produtoId}", [
-    //                         'response' => $produtoResponse->body()
-    //                     ]);
-    //                     $orders[$count]['itens'][$itemIndex]['produto']['imagem'] = null;
-    //                 }
-    //             }
-    //         }
-            
-    //         $orders[$count]['observacoesInternas'] = $pedidoData['observacoesInternas'];
-    //     }
-        
-    //     $count++; // Incrementa o contador
-    // }
-    usort($orders, function ($a, $b) {
-        return $a['numero'] <=> $b['numero'];
-    });
-    return ['orders' => $orders, 'missingSequence' => $missingSequence];
-    //return $orders;
-
-   // dd(array_slice($orders, 0, 8));
-   // return array_slice($orders, 6, 13);
-}
 
 
 
@@ -582,5 +615,123 @@ public function getOrdersWithProductImagesBackup($startDate, $endDate)
     protected function generateState()
     {
         return bin2hex(random_bytes(16));
+    }
+
+        /**
+     * Busca pedidos por intervalo de números
+     */
+    public function getOrdersByNumberRange($numeroInicial, $numeroFinal, $buscarImagens = false)
+    {
+        $accessToken = $this->getCurrentAccessToken();
+        $allOrders = [];
+        
+        Log::info('Iniciando busca de pedidos por número', [
+            'numeroInicial' => $numeroInicial,
+            'numeroFinal' => $numeroFinal,
+            'buscarImagens' => $buscarImagens
+        ]);
+
+        // Buscar pedido por pedido individualmente
+        for ($numero = $numeroInicial; $numero <= $numeroFinal; $numero++) {
+            try {
+                // Buscar pedido específico
+                $response = Http::withToken($accessToken)
+                    ->get("{$this->baseUrl}/pedidos/vendas", [
+                        'numero' => $numero,
+                        'expand' => 'itens.produto'
+                    ]);
+
+                if ($response->ok()) {
+                    $pedidoData = $response->json('data');
+                    
+                    if (!empty($pedidoData)) {
+                        $pedido = $pedidoData[0];
+                        
+                        Log::info("Pedido {$numero} encontrado", [
+                            'id' => $pedido['id'],
+                            'cliente' => $pedido['contato']['nome'] ?? 'N/A'
+                        ]);
+                        
+                        // Se precisar de dados completos (com imagens)
+                        if ($buscarImagens) {
+                            // Buscar detalhes completos do pedido
+                            $pedidoResponse = Http::withToken($accessToken)
+                                ->get("{$this->baseUrl}/pedidos/vendas/{$pedido['id']}", [
+                                    'expand' => 'itens.produto'
+                                ]);
+
+                            if ($pedidoResponse->ok()) {
+                                $pedidoCompleto = $pedidoResponse->json('data');
+                                
+                                // Processar itens e buscar imagens
+                                foreach ($pedidoCompleto['itens'] as $itemIndex => $item) {
+                                    if (isset($item['produto']['id'])) {
+                                        $produtoId = $item['produto']['id'];
+                                        
+                                        $produtoResponse = Http::withToken($accessToken)
+                                            ->get("{$this->baseUrl}/produtos/{$produtoId}");
+
+                                        if ($produtoResponse->ok()) {
+                                            $produtoData = $produtoResponse->json('data');
+                                            $imagemLink = $produtoData['midia']['imagens']['internas'][0]['link'] ?? null;
+                                            $pedidoCompleto['itens'][$itemIndex]['imagem'] = $imagemLink;
+                                        }
+                                        
+                                        usleep(100000); // 100ms
+                                    }
+                                }
+                                
+                                $pedido = $pedidoCompleto;
+                            }
+                        } else {
+                            // Para listagem, buscar apenas dados básicos do pedido
+                            $pedidoResponse = Http::withToken($accessToken)
+                                ->get("{$this->baseUrl}/pedidos/vendas/{$pedido['id']}");
+
+                            if ($pedidoResponse->ok()) {
+                                $pedidoCompleto = $pedidoResponse->json('data');
+                                $pedido['itens'] = $pedidoCompleto['itens'] ?? [];
+                                $pedido['observacoesInternas'] = $pedidoCompleto['observacoesInternas'] ?? null;
+                            }
+                        }
+                        
+                        $allOrders[] = $pedido;
+                    } else {
+                        Log::info("Pedido {$numero} não encontrado no Bling");
+                    }
+                }
+                
+                // Delay menor quando não busca imagens
+                usleep($buscarImagens ? 200000 : 100000);
+                
+            } catch (\Exception $e) {
+                Log::error("Erro ao processar pedido {$numero}", [
+                    'erro' => $e->getMessage()
+                ]);
+            }
+        }
+
+        // Ordenar por número
+        usort($allOrders, function ($a, $b) {
+            return $a['numero'] <=> $b['numero'];
+        });
+
+        // Identificar números faltantes
+        $numerosEncontrados = array_column($allOrders, 'numero');
+        $missingSequence = [];
+        
+        for ($i = $numeroInicial; $i <= $numeroFinal; $i++) {
+            if (!in_array($i, $numerosEncontrados)) {
+                $missingSequence[] = $i;
+            }
+        }
+
+        return [
+            'orders' => $allOrders,
+            'missingSequence' => $missingSequence,
+            'total_esperado' => $numeroFinal - $numeroInicial + 1,
+            'total_encontrado' => count($allOrders),
+            'total_faltante' => count($missingSequence)
+        ];
     }
 }

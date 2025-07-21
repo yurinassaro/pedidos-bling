@@ -1,35 +1,32 @@
 <?php
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\PedidoController;
+use App\Http\Controllers\PedidoImportController;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\ClickUpController;
-use App\Http\Controllers\ImportController;
 
-// Route::get('/', function () {
-//     return view('welcome');
-// });
-
-// Route::get('/', [OrderController::class, 'index'])->name('orders.index');
-// Route::get('/auth', [OrderController::class, 'auth'])->name('bling.auth');
-// Route::post('/orders/{orderId}/update-status', [OrderController::class, 'updateStatus'])->name('orders.update-status');
-// Route::middleware([
-//     'auth:sanctum',
-//     config('jetstream.auth_session'),
-//     'verified',
-// ])->group(function () {
-//     Route::get('/dashboard', function () {
-//         return view('dashboard');
-//     })->name('dashboard');
-// });
-
-Route::get('/', [OrderController::class, 'index'])->name('orders.index');
-//Route::get('/layout', [OrderController::class, 'layout'])->name('orders.index');
-
+// Rotas de autenticação Bling (mantém as existentes)
 Route::get('/auth', [OrderController::class, 'auth'])->name('bling.auth');
 Route::get('/callback', [OrderController::class, 'callback'])->name('bling.callback');
-Route::post('/orders/{orderId}/update-status', [OrderController::class, 'updateStatus'])->name('orders.update-status');
-Route::post('/import', [ImportController::class, 'import'])->name('orders.import');
-Route::get('/sucesso', function () {
-    return 'Callback processado com sucesso!';
+
+// Rotas de importação de pedidos
+Route::prefix('importacao')->group(function () {
+    Route::get('/', [PedidoImportController::class, 'index'])->name('pedidos.importacao.index');
+    Route::get('/por-numero', [PedidoImportController::class, 'indexPorNumero'])->name('pedidos.importacao.por-numero');
+    Route::post('/importar', [PedidoImportController::class, 'importar'])->name('pedidos.importacao.importar');
+    Route::post('/importar-por-numero', [PedidoImportController::class, 'importarPorNumero'])->name('pedidos.importacao.importar-por-numero');
+    Route::post('/verificar-nao-importados', [PedidoImportController::class, 'verificarNaoImportados'])->name('pedidos.importacao.verificar');
 });
 
-//Route::get('/clickup/callback', [ClickUpController::class, 'callback'])->name('clickup.callback');
+// Rotas de gerenciamento de pedidos
+Route::prefix('pedidos')->group(function () {
+    Route::get('/', [PedidoController::class, 'index'])->name('pedidos.index');
+    Route::get('/{pedido}', [PedidoController::class, 'show'])->name('pedidos.show');
+    Route::patch('/{pedido}/status', [PedidoController::class, 'alterarStatus'])->name('pedidos.alterar-status');
+    Route::post('/{pedido}/itens/{item}/imagem', [PedidoController::class, 'atualizarImagem'])->name('pedidos.atualizar-imagem');
+    Route::delete('/{pedido}/itens/{item}/imagem', [PedidoController::class, 'removerImagemPersonalizada'])->name('pedidos.remover-imagem');
+});
+
+// Redirecionar home para pedidos
+Route::get('/', function () {
+    return redirect()->route('pedidos.index');
+});
