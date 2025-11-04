@@ -20,7 +20,7 @@ class PedidoController extends Controller
      *   - View: Lista de pedidos
      */
     public function index(Request $request)
-    {
+    {     
         $query = Pedido::with('itens');
 
         // Filtro por status
@@ -43,14 +43,13 @@ class PedidoController extends Controller
         }
 
         $pedidos = $query->orderBy('numero', 'asc')->paginate(12);
-
         // Contadores para os cards de status
         $contadores = [
             'aberto' => Pedido::aberto()->count(),
             'em_producao' => Pedido::emProducao()->count(),
             'finalizado' => Pedido::finalizado()->count(),
         ];
-
+        
         return view('pedidos.index', compact('pedidos', 'contadores'));
     }
 
@@ -129,8 +128,11 @@ class PedidoController extends Controller
      */
     public function atualizarImagem(Request $request, Pedido $pedido, PedidoItem $item): JsonResponse
     {
+        // Desabilitar qualquer saída de erro/aviso
+        error_reporting(0);
+        
         $request->validate([
-            'imagem' => 'required|image|mimes:jpeg,png,jpg,webp|max:5120' // 5MB
+            'imagem' => 'required|image|mimes:jpeg,png,jpg,webp|max:5120'
         ]);
 
         // Verificar se o item pertence ao pedido
@@ -152,13 +154,23 @@ class PedidoController extends Controller
             $item->imagem_personalizada = $path;
             $item->save();
 
+            // Limpar qualquer output buffer
+            if (ob_get_level()) {
+                ob_end_clean();
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Imagem atualizada com sucesso',
-                'url' => Storage::url($path)
+                'url' => '/serve-image.php?path=' . $path
             ]);
 
         } catch (\Exception $e) {
+            // Limpar qualquer output buffer
+            if (ob_get_level()) {
+                ob_end_clean();
+            }
+            
             Log::error('Erro ao atualizar imagem', [
                 'item_id' => $item->id,
                 'erro' => $e->getMessage()
@@ -208,6 +220,111 @@ class PedidoController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Erro ao remover imagem'
+            ], 500);
+        }
+    }
+
+    /**
+     * Função: destroy
+     * Descrição: Exclui um pedido e todos os seus itens.
+     * Parâmetros:
+     *   - pedido (Pedido): Model do pedido
+     * Retorno:
+     *   - JsonResponse: Confirmação da exclusão
+     */
+    public function destroy(Pedido $pedido): JsonResponse
+    {
+        try {
+            // Remover imagens personalizadas dos itens
+            foreach ($pedido->itens as $item) {
+                if ($item->imagem_personalizada && Storage::exists($item->imagem_personalizada)) {
+                    Storage::delete($item->imagem_personalizada);
+                }
+            }
+
+            // Deletar itens e pedido (cascade)
+            $numero = $pedido->numero;
+            $pedido->delete();
+
+            Log::info('Pedido excluído', [
+                'pedido_id' => $pedido->id,
+                'numero' => $numero
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => "Pedido #{$numero} excluído com sucesso"
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Erro ao excluir pedido', [
+                'pedido_id' => $pedido->id,
+                'erro' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erro ao excluir pedido'
+            ], 500);
+        }
+    }
+
+    /**
+     * Função: destroyMultiple
+     * Descrição: Exclui múltiplos pedidos de uma vez.
+     * Parâmetros:
+     *   - request (Request): Requisição com array de IDs
+     * Retorno:
+     *   - JsonResponse: Resumo das exclusões
+     */
+    public function destroyMultiple(Request $request): JsonResponse
+    {
+        $request->validate([
+            'pedidos' => 'required|array',
+            'pedidos.*' => 'exists:pedidos,id'
+        ]);
+
+        try {
+            $pedidos = Pedido::whereIn('id', $request->pedidos)->get();
+            $excluidos = 0;
+            $erros = 0;
+
+            foreach ($pedidos as $pedido) {
+                try {
+                    // Remover imagens personalizadas
+                    foreach ($pedido->itens as $item) {
+                        if ($item->imagem_personalizada && Storage::exists($item->imagem_personalizada)) {
+                            Storage::delete($item->imagem_personalizada);
+                        }
+                    }
+
+                    $pedido->delete();
+                    $excluidos++;
+
+                } catch (\Exception $e) {
+                    Log::error('Erro ao excluir pedido em lote', [
+                        'pedido_id' => $pedido->id,
+                        'erro' => $e->getMessage()
+                    ]);
+                    $erros++;
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => "{$excluidos} pedido(s) excluído(s) com sucesso" . ($erros > 0 ? ", {$erros} erro(s)" : ""),
+                'excluidos' => $excluidos,
+                'erros' => $erros
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Erro ao excluir múltiplos pedidos', [
+                'erro' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erro ao excluir pedidos'
             ], 500);
         }
     }

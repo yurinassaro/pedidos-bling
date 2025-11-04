@@ -90,10 +90,10 @@
                 @foreach($pedido->itens as $item)
                 <div class="border rounded-lg overflow-hidden" data-item-id="{{ $item->id }}">
                     <div class="relative">
-                        @if($item->imagem)
-                        <img src="{{ $item->hasCustomImage() ? Storage::url($item->imagem) : $item->imagem }}" 
-                             alt="{{ $item->descricao }}"
-                             class="w-full object-cover">
+                        @if($item->imagem_personalizada || $item->imagem_original)
+                        <img src="{{ $item->imagem_personalizada ? '/serve-image.php?path=' . $item->imagem_personalizada : $item->imagem_original }}" 
+                            alt="{{ $item->descricao }}"
+                            class="w-full h-64 object-cover">
                         @else
                         <div class="w-full h-64 bg-gray-200 flex items-center justify-center">
                             <svg class="w-20 h-20 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -102,7 +102,7 @@
                         </div>
                         @endif
                         
-                        @if($item->hasCustomImage())
+                        @if($item->imagem_personalizada)
                         <div class="absolute top-2 right-2 bg-blue-500 text-white px-2 py-1 rounded text-xs">
                             Personalizada
                         </div>
@@ -120,7 +120,7 @@
                         <div class="flex gap-2">
                             <label for="upload-{{ $item->id }}" 
                                    class="flex-1 text-center px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 cursor-pointer">
-                                {{ $item->hasCustomImage() ? 'Trocar Imagem' : 'Adicionar Imagem' }}
+                                {{ $item->imagem_personalizada ? 'Trocar Imagem' : 'Adicionar Imagem' }}
                             </label>
                             <input type="file" 
                                    id="upload-{{ $item->id }}" 
@@ -128,7 +128,7 @@
                                    accept="image/*"
                                    onchange="uploadImagem({{ $pedido->id }}, {{ $item->id }}, this)">
                             
-                            @if($item->hasCustomImage())
+                            @if($item->imagem_personalizada)
                             <button onclick="removerImagem({{ $pedido->id }}, {{ $item->id }})"
                                     class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">
                                 Remover
@@ -182,7 +182,6 @@ function uploadImagem(pedidoId, itemId, input) {
 
     // Mostrar loading
     const itemDiv = document.querySelector(`[data-item-id="${itemId}"]`);
-    const originalContent = itemDiv.innerHTML;
     itemDiv.classList.add('opacity-50');
 
     fetch(`/pedidos/${pedidoId}/itens/${itemId}/imagem`, {
@@ -192,18 +191,30 @@ function uploadImagem(pedidoId, itemId, input) {
         },
         body: formData
     })
-    .then(response => response.json())
+    .then(response => {
+        console.log('Status:', response.status); // Debug
+        console.log('Headers:', response.headers); // Debug
+        
+        if (!response.ok) {
+            throw new Error('Erro na requisição');
+        }
+        return response.json();
+    })
     .then(data => {
+        console.log('Resposta:', data); // Debug
+        
         if (data.success) {
             showNotification('Imagem atualizada com sucesso!', 'success');
+            
+            // Recarregar a página após 1.5 segundos
             setTimeout(() => window.location.reload(), 1500);
         } else {
-            showNotification('Erro ao fazer upload da imagem', 'error');
+            showNotification(data.message || 'Erro ao fazer upload da imagem', 'error');
             itemDiv.classList.remove('opacity-50');
         }
     })
     .catch(error => {
-        console.error('Erro:', error);
+        console.error('Erro completo:', error); // Debug
         showNotification('Erro ao fazer upload da imagem', 'error');
         itemDiv.classList.remove('opacity-50');
     });

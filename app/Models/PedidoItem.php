@@ -54,7 +54,7 @@ class PedidoItem extends Model
      * Descrição: Verifica se o item possui imagem personalizada.
      * Parâmetros: Nenhum
      * Retorno:
-     *   - bool: True se possui imagem personalizada
+     *   - bool: true se tem imagem personalizada, false caso contrário
      */
     public function hasCustomImage(): bool
     {

@@ -122,12 +122,25 @@ class PedidoImportService
             // Importar os itens
             if (isset($pedidoBling['itens']) && is_array($pedidoBling['itens'])) {
                 foreach ($pedidoBling['itens'] as $index => $itemBling) {
+                    // Processar a URL da imagem
+                    $imagemUrl = null;
+                    if (isset($itemBling['imagem'])) {
+                        // Se for uma string, usa direto
+                        if (is_string($itemBling['imagem'])) {
+                            $imagemUrl = $itemBling['imagem'];
+                        }
+                        // Se for array, pega a primeira imagem
+                        elseif (is_array($itemBling['imagem']) && !empty($itemBling['imagem'])) {
+                            $imagemUrl = $itemBling['imagem'][0];
+                        }
+                    }
+
                     PedidoItem::create([
                         'pedido_id' => $pedido->id,
                         'bling_produto_id' => $itemBling['produto']['id'] ?? null,
                         'descricao' => $itemBling['descricao'] ?? 'Produto sem descrição',
                         'quantidade' => $itemBling['quantidade'] ?? 1,
-                        'imagem_original' => $itemBling['imagem'] ?? null,
+                        'imagem_original' => $imagemUrl,
                         'ordem' => $index
                     ]);
                 }
@@ -199,7 +212,7 @@ class PedidoImportService
         ];
     }
 
-        /**
+    /**
      * Função: importarPedidosPorIntervalo
      * Descrição: Importa pedidos por intervalo de números.
      * Parâmetros:
@@ -208,7 +221,6 @@ class PedidoImportService
      * Retorno:
      *   - array: Resumo da importação
      */
-    // Para importação (com imagens)
     public function importarPedidosPorIntervalo(int $numeroInicial, int $numeroFinal): array
     {
         $resultado = [
@@ -222,10 +234,12 @@ class PedidoImportService
         try {
             // Passar true para buscar imagens
             $dadosPedidos = $this->blingService->getOrdersByNumberRange($numeroInicial, $numeroFinal, true);
-                // Log para debug
+            
+            // Log para debug
             Log::info('Dados retornados do Bling', [
                 'total_pedidos' => count($dadosPedidos['orders'] ?? [])
             ]);
+            
             $pedidosBling = $dadosPedidos['orders'];
             
             // Registrar números não encontrados
@@ -271,15 +285,15 @@ class PedidoImportService
         return $resultado;
     }
 
-/**
- * Função: verificarIntervalosNaoImportados
- * Descrição: Verifica quais intervalos de pedidos ainda não foram importados.
- * Parâmetros:
- *   - numeroInicial (int): Número inicial para verificar
- *   - numeroFinal (int): Número final para verificar
- * Retorno:
- *   - array: Intervalos sugeridos para importação
- */
+    /**
+     * Função: verificarIntervalosNaoImportados
+     * Descrição: Verifica quais intervalos de pedidos ainda não foram importados.
+     * Parâmetros:
+     *   - numeroInicial (int): Número inicial para verificar
+     *   - numeroFinal (int): Número final para verificar
+     * Retorno:
+     *   - array: Intervalos sugeridos para importação
+     */
     public function verificarIntervalosNaoImportados(int $numeroInicial, int $numeroFinal): array
     {
         // Buscar números já importados no banco
@@ -345,7 +359,8 @@ class PedidoImportService
         
         return $intervalos;
     }
-        /**
+
+    /**
      * Função: listarPedidosPorIntervalo
      * Descrição: Lista pedidos do Bling em um intervalo de números.
      * Parâmetros:
@@ -366,15 +381,15 @@ class PedidoImportService
         }
     }
 
-        /**
+    /**
      * Função: listarPedidosNaoImportados
      * Descrição: Lista pedidos do Bling que ainda não foram importados (por data).
-    * Parâmetros:
-    *   - startDate (string): Data inicial no formato Y-m-d
-    *   - endDate (string): Data final no formato Y-m-d
-    * Retorno:
-    *   - array: Lista de pedidos não importados
-    */
+     * Parâmetros:
+     *   - startDate (string): Data inicial no formato Y-m-d
+     *   - endDate (string): Data final no formato Y-m-d
+     * Retorno:
+     *   - array: Lista de pedidos não importados
+     */
     public function listarPedidosNaoImportados(string $startDate, string $endDate): array
     {
         try {

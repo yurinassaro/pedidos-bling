@@ -36,9 +36,10 @@ return [
     ],
 
     'bling' => [
-        'client_id' => env('BLING_CLIENT_ID'),  // Variável do .env
-        'client_secret' => env('BLING_CLIENT_SECRET'),  // Variável do .env
-        'redirect_url' => env('BLING_REDIRECT_URL'),  // Para autenticação OAuth
+        'client_id' => env('BLING_CLIENT_ID'),
+        'client_secret' => env('BLING_CLIENT_SECRET'),
+        'redirect_url' => env('BLING_REDIRECT_URL'),
+        'webhook_url' => env('BLING_WEBHOOK_URL', env('BLING_REDIRECT_URL')), // Fallback
     ],
 
 ];

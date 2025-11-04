@@ -22,6 +22,8 @@ Route::prefix('pedidos')->group(function () {
     Route::get('/', [PedidoController::class, 'index'])->name('pedidos.index');
     Route::get('/{pedido}', [PedidoController::class, 'show'])->name('pedidos.show');
     Route::patch('/{pedido}/status', [PedidoController::class, 'alterarStatus'])->name('pedidos.alterar-status');
+    Route::delete('/{pedido}', [PedidoController::class, 'destroy'])->name('pedidos.destroy');
+    Route::post('/excluir-multiplos', [PedidoController::class, 'destroyMultiple'])->name('pedidos.destroy-multiple');
     Route::post('/{pedido}/itens/{item}/imagem', [PedidoController::class, 'atualizarImagem'])->name('pedidos.atualizar-imagem');
     Route::delete('/{pedido}/itens/{item}/imagem', [PedidoController::class, 'removerImagemPersonalizada'])->name('pedidos.remover-imagem');
 });
@@ -30,3 +32,22 @@ Route::prefix('pedidos')->group(function () {
 Route::get('/', function () {
     return redirect()->route('pedidos.index');
 });
+
+// Rota temporária para servir imagens do storage (DESENVOLVIMENTO)
+Route::get('/storage/{path}', function ($path) {
+    $fullPath = storage_path('app/public/' . $path);
+    
+    if (!file_exists($fullPath)) {
+        abort(404, 'Arquivo não encontrado');
+    }
+    
+    // Verificar se é uma imagem
+    $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    $extension = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
+    
+    if (!in_array($extension, $allowedExtensions)) {
+        abort(403, 'Tipo de arquivo não permitido');
+    }
+    
+    return response()->file($fullPath);
+})->where('path', '.*');

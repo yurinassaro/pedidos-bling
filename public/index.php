@@ -1,5 +1,28 @@
 <?php
 
+// Manter os erros importantes, mas filtrar broken pipe
+error_reporting(E_ALL);
+ini_set('display_errors', '1');
+
+// Handler ESPECÍFICO para broken pipe
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    // Lista de erros para ignorar
+    $ignorar = [
+        'Broken pipe',
+        'file_put_contents(): Write of'
+    ];
+    
+    foreach ($ignorar as $erro) {
+        if (strpos($errstr, $erro) !== false) {
+            return true; // Ignora APENAS esses erros
+        }
+    }
+    
+    // Para TODOS os outros erros, mostra normalmente
+    return false;
+}, E_ALL);
+
+// Resto do código...
 use Illuminate\Http\Request;
 
 define('LARAVEL_START', microtime(true));

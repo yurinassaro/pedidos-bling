@@ -1,16 +1,43 @@
 @extends('layouts.app')
 
 @section('content')
-<div class="container mx-auto px-4 py-8">
-    <div class="flex justify-between items-center mb-8">
-        <h1 class="text-3xl font-bold">Gerenciar Pedidos</h1>
-        <a href="{{ route('pedidos.importacao.index') }}" 
-           class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"></path>
-            </svg>
-            Importar Pedidos
-        </a>
+    <div class="container mx-auto px-4 py-8">
+        <div class="flex justify-between items-center mb-8">
+        <div class="flex items-center gap-4">
+            <h1 class="text-3xl font-bold">Gerenciar Pedidos</h1>
+            <button id="btnModoSelecao"
+                    onclick="toggleModoSelecao()"
+                    class="px-3 py-1 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+                </svg>
+                Selecionar Múltiplos
+            </button>
+            <button id="btnExcluirSelecionados"
+                    onclick="excluirSelecionados()"
+                    class="hidden px-3 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                </svg>
+                Excluir Selecionados
+            </button>
+        </div>
+        <div class="flex gap-3">
+            <a href="{{ route('pedidos.importacao.index') }}"
+            class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"></path>
+                </svg>
+                Importar por Data
+            </a>
+            <a href="{{ route('pedidos.importacao.por-numero') }}"
+            class="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"></path>
+                </svg>
+                Importar por Número
+            </a>
+        </div>
     </div>
 
     {{-- Cards de Status --}}
@@ -120,20 +147,26 @@
                 {{-- Header do Card --}}
                 <div class="p-4 border-b bg-gray-50">
                     <div class="flex justify-between items-start">
-                        <div>
-                            <h3 class="font-semibold text-lg">
-                                Pedido #{{ $pedido->numero }}
-                            </h3>
-                            <p class="text-sm text-gray-600">{{ $pedido->cliente_nome }}</p>
-                            <p class="text-xs text-gray-500">{{ $pedido->data_pedido->format('d/m/Y') }}</p>
+                        <div class="flex items-start gap-3 flex-1">
+                            <input type="checkbox"
+                                   class="pedido-checkbox hidden mt-1 h-5 w-5 text-red-600 rounded"
+                                   data-pedido-id="{{ $pedido->id }}"
+                                   onchange="atualizarContagemSelecionados()">
+                            <div>
+                                <h3 class="font-semibold text-lg">
+                                    Pedido #{{ $pedido->numero }}
+                                </h3>
+                                <p class="text-sm text-gray-600">{{ $pedido->cliente_nome }}</p>
+                                <p class="text-xs text-gray-500">{{ $pedido->data_pedido->format('d/m/Y') }}</p>
+                            </div>
                         </div>
-                        <span class="status-badge px-3 py-1 rounded-full text-xs font-semibold
+                        <!-- <span class="status-badge px-3 py-1 rounded-full text-xs font-semibold
                             @if($pedido->status == 'aberto') bg-yellow-100 text-yellow-800
                             @elseif($pedido->status == 'em_producao') bg-blue-100 text-blue-800
                             @else bg-green-100 text-green-800
                             @endif">
                             {{ ucfirst(str_replace('_', ' ', $pedido->status)) }}
-                        </span>
+                        </span> -->
                     </div>
                 </div>
 
@@ -150,19 +183,20 @@
                 <div class="divide-y divide-gray-200 max-h-[600px] md:max-h-[500px] overflow-y-auto">
                     @foreach($pedido->itens as $item)
                     <div class="p-4">
-                        @if($item->imagem)
-                        <img src="{{ $item->hasCustomImage() ? Storage::url($item->imagem) : $item->imagem }}" 
-                             alt="{{ $item->descricao }}"
-                             class="w-full h-100 md:h-100 lg:h-100 object-cover rounded mb-3">
+                        @if($item->imagem_personalizada || $item->imagem_original)
+                        <img src="{{ $item->imagem_personalizada ? '/serve-image.php?path=' . $item->imagem_personalizada : $item->imagem_original }}" 
+                            alt="{{ $item->descricao }}"
+                            class="w-full h-90 md:h-90 lg:h-90 object-cover rounded mb-3">
                         @else
-                        <div class="w-full h-100 md:h-100 lg:h-100 bg-gray-200 rounded mb-3 flex items-center justify-center">
+
+                        <div class="w-full h-90 md:h-90 lg:h-90 bg-gray-200 rounded mb-2 flex items-center justify-center">
                             <svg class="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
                             </svg>
                         </div>
                         @endif
-                        <h4 class="font-medium text-sm mb-1">{{ $item->descricao }}</h4>
-                        <p class="text-sm text-gray-600">Qtd: {{ number_format($item->quantidade, 0) }}</p>
+                        <h4  class="font-medium text-sm mb-1" style="margin:0; padding:0">{{ $item->descricao }}</h4>
+                        <p class="text-sm text-gray-600" style="margin:0; padding:0; font-size: 20px">Qtd: {{ number_format($item->quantidade, 0) }}</p>
                         @if($item->hasCustomImage())
                         <p class="text-xs text-blue-600 mt-1">✓ Imagem personalizada</p>
                         @endif
@@ -173,11 +207,11 @@
                 {{-- Ações --}}
                 <div class="p-4 bg-gray-50 border-t">
                     <div class="flex gap-2">
-                        <a href="{{ route('pedidos.show', $pedido) }}" 
+                        <a href="{{ route('pedidos.show', $pedido) }}"
                            class="flex-1 text-center px-3 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm">
                             Ver Detalhes
                         </a>
-                        
+
                         @if($pedido->status == 'aberto')
                         <button onclick="alterarStatus({{ $pedido->id }}, 'em_producao')"
                                 class="flex-1 px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
@@ -189,6 +223,14 @@
                             Finalizar
                         </button>
                         @endif
+
+                        <button onclick="excluirPedido({{ $pedido->id }}, '{{ $pedido->numero }}')"
+                                class="px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                                title="Excluir pedido">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                            </svg>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -210,6 +252,8 @@
 
 @push('scripts')
 <script>
+let modoSelecao = false;
+
 function alterarStatus(pedidoId, novoStatus) {
     if (!confirm(`Confirma a alteração do status para "${novoStatus.replace('_', ' ')}"?`)) {
         return;
@@ -226,13 +270,10 @@ function alterarStatus(pedidoId, novoStatus) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Atualizar o card sem recarregar a página
             const card = document.querySelector(`[data-pedido-id="${pedidoId}"]`);
-            
-            // Atualizar badge de status
             const badge = card.querySelector('.status-badge');
             badge.className = 'status-badge px-3 py-1 rounded-full text-xs font-semibold ';
-            
+
             if (novoStatus === 'em_producao') {
                 badge.className += 'bg-blue-100 text-blue-800';
                 badge.textContent = 'Em Produção';
@@ -240,18 +281,15 @@ function alterarStatus(pedidoId, novoStatus) {
                 badge.className += 'bg-green-100 text-green-800';
                 badge.textContent = 'Finalizado';
             }
-            
-            // Atualizar botões de ação
+
             const actionsDiv = card.querySelector('.p-4.bg-gray-50.border-t > div');
             let newButtons = '<a href="/pedidos/' + pedidoId + '" class="flex-1 text-center px-3 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm">Ver Detalhes</a>';
-            
+
             if (novoStatus === 'em_producao') {
                 newButtons += '<button onclick="alterarStatus(' + pedidoId + ', \'finalizado\')" class="flex-1 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm">Finalizar</button>';
             }
-            
+
             actionsDiv.innerHTML = newButtons;
-            
-            // Mostrar notificação de sucesso
             showNotification('Status atualizado com sucesso!', 'success');
         } else {
             showNotification('Erro ao atualizar status', 'error');
@@ -263,17 +301,146 @@ function alterarStatus(pedidoId, novoStatus) {
     });
 }
 
+function excluirPedido(pedidoId, numeroPedido) {
+    if (!confirm(`Tem certeza que deseja excluir o Pedido #${numeroPedido}?\n\nEsta ação não pode ser desfeita!`)) {
+        return;
+    }
+
+    fetch(`/pedidos/${pedidoId}`, {
+        method: 'DELETE',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const card = document.querySelector(`[data-pedido-id="${pedidoId}"]`);
+            card.style.transition = 'opacity 0.3s';
+            card.style.opacity = '0';
+            setTimeout(() => {
+                card.remove();
+            }, 300);
+            showNotification(data.message, 'success');
+        } else {
+            showNotification(data.message || 'Erro ao excluir pedido', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Erro:', error);
+        showNotification('Erro ao excluir pedido', 'error');
+    });
+}
+
+function toggleModoSelecao() {
+    modoSelecao = !modoSelecao;
+    const checkboxes = document.querySelectorAll('.pedido-checkbox');
+    const btnModoSelecao = document.getElementById('btnModoSelecao');
+    const btnExcluir = document.getElementById('btnExcluirSelecionados');
+
+    checkboxes.forEach(checkbox => {
+        if (modoSelecao) {
+            checkbox.classList.remove('hidden');
+        } else {
+            checkbox.classList.add('hidden');
+            checkbox.checked = false;
+        }
+    });
+
+    if (modoSelecao) {
+        btnModoSelecao.classList.add('bg-red-200', 'text-red-800');
+        btnModoSelecao.classList.remove('bg-gray-200', 'text-gray-700');
+        btnModoSelecao.innerHTML = `
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+            Cancelar Seleção
+        `;
+    } else {
+        btnModoSelecao.classList.remove('bg-red-200', 'text-red-800');
+        btnModoSelecao.classList.add('bg-gray-200', 'text-gray-700');
+        btnModoSelecao.innerHTML = `
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+            </svg>
+            Selecionar Múltiplos
+        `;
+        btnExcluir.classList.add('hidden');
+    }
+
+    atualizarContagemSelecionados();
+}
+
+function atualizarContagemSelecionados() {
+    const checkboxes = document.querySelectorAll('.pedido-checkbox:checked');
+    const btnExcluir = document.getElementById('btnExcluirSelecionados');
+
+    if (checkboxes.length > 0 && modoSelecao) {
+        btnExcluir.classList.remove('hidden');
+        btnExcluir.textContent = `Excluir ${checkboxes.length} Selecionado(s)`;
+    } else {
+        btnExcluir.classList.add('hidden');
+    }
+}
+
+function excluirSelecionados() {
+    const checkboxes = document.querySelectorAll('.pedido-checkbox:checked');
+    const pedidosIds = Array.from(checkboxes).map(cb => cb.getAttribute('data-pedido-id'));
+
+    if (pedidosIds.length === 0) {
+        showNotification('Nenhum pedido selecionado', 'error');
+        return;
+    }
+
+    if (!confirm(`Tem certeza que deseja excluir ${pedidosIds.length} pedido(s)?\n\nEsta ação não pode ser desfeita!`)) {
+        return;
+    }
+
+    fetch('/pedidos/excluir-multiplos', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify({ pedidos: pedidosIds })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            pedidosIds.forEach(id => {
+                const card = document.querySelector(`[data-pedido-id="${id}"]`);
+                if (card) {
+                    card.style.transition = 'opacity 0.3s';
+                    card.style.opacity = '0';
+                    setTimeout(() => {
+                        card.remove();
+                    }, 300);
+                }
+            });
+            showNotification(data.message, 'success');
+            toggleModoSelecao(); // Desativa modo seleção
+        } else {
+            showNotification(data.message || 'Erro ao excluir pedidos', 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Erro:', error);
+        showNotification('Erro ao excluir pedidos', 'error');
+    });
+}
+
 function showNotification(message, type = 'info') {
     const notification = document.createElement('div');
     notification.className = `fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 ${
-        type === 'success' ? 'bg-green-500 text-white' : 
-        type === 'error' ? 'bg-red-500 text-white' : 
+        type === 'success' ? 'bg-green-500 text-white' :
+        type === 'error' ? 'bg-red-500 text-white' :
         'bg-blue-500 text-white'
     }`;
     notification.textContent = message;
-    
+
     document.body.appendChild(notification);
-    
+
     setTimeout(() => {
         notification.remove();
     }, 3000);
