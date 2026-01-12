@@ -147,64 +147,117 @@ class PedidoImportController extends Controller
             return redirect()->route('bling.auth');
         }
 
-        $numeroInicial = (int) $request->get('numero_inicial', 8000);
-        $numeroFinal = (int) $request->get('numero_final', 8001);
+        // Buscar último pedido importado para usar como valor inicial padrão
+        // Usar CAST para comparar como número (campo numero é string)
+        $ultimoPedido = (int) Pedido::selectRaw('MAX(CAST(numero AS UNSIGNED)) as max_numero')->value('max_numero') ?? 13000;
+        $proximoPedido = $ultimoPedido + 1;
+
+        $numeroInicial = $proximoPedido;
+        $numeroFinal = $proximoPedido + 99;
+
+        // GET inicial: apenas mostra o formulário (rápido)
+        return view('pedidos.importacao-numero', [
+            'pedidosNaoImportados' => null, // null = não buscou ainda
+            'pedidosAntigos' => [],
+            'numeroInicial' => $numeroInicial,
+            'numeroFinal' => $numeroFinal,
+            'totalNaoImportado' => 0,
+            'totalImportado' => 0,
+            'totalAntigos' => 0,
+            'buscaRealizada' => false,
+        ]);
+    }
+
+    /**
+     * Verifica pedidos no intervalo (POST - busca na API do Bling)
+     */
+    public function verificarIntervalo(Request $request)
+    {
+        if (!$this->authService->hasValidToken()) {
+            return redirect()->route('bling.auth');
+        }
+
+        $request->validate([
+            'numero_inicial' => 'required|integer|min:1',
+            'numero_final' => 'required|integer|gte:numero_inicial'
+        ]);
+
+        $numeroInicial = (int) $request->numero_inicial;
+        $numeroFinal = (int) $request->numero_final;
 
         try {
             // IMPORTANTE: Usar listarPedidosPorIntervalo, NÃO listarPedidosNaoImportados
             $dadosPedidos = $this->importService->listarPedidosPorIntervalo($numeroInicial, $numeroFinal);
-            
+
             Log::info('Pedidos buscados por número', [
                 'intervalo_solicitado' => "$numeroInicial - $numeroFinal",
                 'total_encontrado' => count($dadosPedidos['orders'] ?? []),
                 'numeros_encontrados' => array_column($dadosPedidos['orders'] ?? [], 'numero')
             ]);
-            
+
             // Buscar pedidos já importados no banco
             $pedidosImportados = Pedido::whereBetween('numero', [$numeroInicial, $numeroFinal])
                                     ->pluck('numero', 'bling_id')
                                     ->toArray();
-            
-            // Separar pedidos não importados
+
+            // Data limite: 30 dias atras
+            $dataLimite = now()->subDays(30)->startOfDay();
+
+            // Separar pedidos não importados e pedidos antigos (>30 dias)
             $pedidosNaoImportados = [];
+            $pedidosAntigos = []; // Pedidos com mais de 30 dias para exibir em vermelho
             foreach ($dadosPedidos['orders'] ?? [] as $pedido) {
-                if (!isset($pedidosImportados[$pedido['id']])) {
+                // Verificar se já foi importado
+                if (isset($pedidosImportados[$pedido['id']])) {
+                    continue;
+                }
+
+                // Verificar se o pedido tem mais de 30 dias
+                $dataPedido = isset($pedido['data']) ? \Carbon\Carbon::parse($pedido['data']) : now();
+
+                if ($dataPedido->lt($dataLimite)) {
+                    // Adicionar aos pedidos antigos (mostrar em vermelho)
+                    $pedidosAntigos[] = $pedido;
+                } else {
+                    // Adicionar aos pedidos normais para importação
                     $pedidosNaoImportados[] = $pedido;
                 }
             }
-            
-            // Verificar intervalos não importados
-            $intervalosNaoImportados = $this->importService->verificarIntervalosNaoImportados(
-                $numeroInicial, 
-                $numeroFinal
-            );
-            
+
+            if (count($pedidosAntigos) > 0) {
+                Log::info("Pedidos antigos encontrados (>30 dias): " . count($pedidosAntigos));
+            }
+
             // Estatísticas
             $totalNaoImportado = count($pedidosNaoImportados);
             $totalImportado = count($pedidosImportados);
+            $totalAntigos = count($pedidosAntigos);
 
             return view('pedidos.importacao-numero', compact(
                 'pedidosNaoImportados',
-                'intervalosNaoImportados',
+                'pedidosAntigos',
                 'numeroInicial',
                 'numeroFinal',
                 'totalNaoImportado',
-                'totalImportado'
-            ));
+                'totalImportado',
+                'totalAntigos'
+            ))->with('buscaRealizada', true);
 
         } catch (\Exception $e) {
             Log::error('Erro ao verificar intervalos por número', [
                 'erro' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-            
+
             return view('pedidos.importacao-numero', [
                 'pedidosNaoImportados' => [],
-                'intervalosNaoImportados' => [],
+                'pedidosAntigos' => [],
                 'numeroInicial' => $numeroInicial,
                 'numeroFinal' => $numeroFinal,
                 'totalNaoImportado' => 0,
                 'totalImportado' => 0,
+                'totalAntigos' => 0,
+                'buscaRealizada' => true,
                 'error' => 'Erro ao verificar pedidos: ' . $e->getMessage()
             ]);
         }

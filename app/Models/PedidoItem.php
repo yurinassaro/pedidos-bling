@@ -15,6 +15,7 @@ class PedidoItem extends Model
         'descricao',
         'quantidade',
         'imagem_original',
+        'imagem_local',
         'imagem_personalizada',
         'observacoes',
         'ordem'

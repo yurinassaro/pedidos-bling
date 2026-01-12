@@ -5,7 +5,9 @@ namespace App\Services;
 use App\Models\Pedido;
 use App\Models\PedidoItem;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
 
 class PedidoImportService
@@ -90,8 +92,14 @@ class PedidoImportService
 
             // Verificar se o pedido já existe
             $pedidoExistente = Pedido::where('bling_id', $pedidoBling['id'])->first();
-            
+
             if ($pedidoExistente) {
+                // Se existe mas não tem itens, atualizar!
+                if ($pedidoExistente->itens()->count() === 0 && !empty($pedidoBling['itens'])) {
+                    Log::info("Pedido {$pedidoBling['numero']} existe mas sem itens - atualizando...");
+                    return $this->atualizarPedidoSemItens($pedidoExistente, $pedidoBling);
+                }
+
                 return [
                     'status' => 'existente',
                     'numero' => $pedidoBling['numero'],
@@ -135,12 +143,19 @@ class PedidoImportService
                         }
                     }
 
+                    // Baixar e salvar a imagem localmente
+                    $imagemLocal = null;
+                    if ($imagemUrl) {
+                        $imagemLocal = $this->baixarImagemProduto($imagemUrl, $pedido->numero, $index);
+                    }
+
                     PedidoItem::create([
                         'pedido_id' => $pedido->id,
                         'bling_produto_id' => $itemBling['produto']['id'] ?? null,
                         'descricao' => $itemBling['descricao'] ?? 'Produto sem descrição',
                         'quantidade' => $itemBling['quantidade'] ?? 1,
                         'imagem_original' => $imagemUrl,
+                        'imagem_local' => $imagemLocal,
                         'ordem' => $index
                     ]);
                 }
@@ -168,6 +183,77 @@ class PedidoImportService
                 'status' => 'erro',
                 'numero' => $pedidoBling['numero'] ?? 'N/A',
                 'mensagem' => 'Erro: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    /**
+     * Função: atualizarPedidoSemItens
+     * Descrição: Atualiza um pedido existente que não tem itens.
+     */
+    protected function atualizarPedidoSemItens(Pedido $pedido, array $pedidoBling): array
+    {
+        try {
+            DB::beginTransaction();
+
+            // Atualizar dados do pedido
+            $pedido->update([
+                'observacoes_internas' => $pedidoBling['observacoesInternas'] ?? $pedido->observacoes_internas,
+            ]);
+
+            // Importar os itens
+            if (isset($pedidoBling['itens']) && is_array($pedidoBling['itens'])) {
+                foreach ($pedidoBling['itens'] as $index => $itemBling) {
+                    // Processar a URL da imagem
+                    $imagemUrl = null;
+                    if (isset($itemBling['imagem'])) {
+                        if (is_string($itemBling['imagem'])) {
+                            $imagemUrl = $itemBling['imagem'];
+                        } elseif (is_array($itemBling['imagem']) && !empty($itemBling['imagem'])) {
+                            $imagemUrl = $itemBling['imagem'][0];
+                        }
+                    }
+
+                    // Baixar e salvar a imagem localmente
+                    $imagemLocal = null;
+                    if ($imagemUrl) {
+                        $imagemLocal = $this->baixarImagemProduto($imagemUrl, $pedido->numero, $index);
+                    }
+
+                    PedidoItem::create([
+                        'pedido_id' => $pedido->id,
+                        'bling_produto_id' => $itemBling['produto']['id'] ?? null,
+                        'descricao' => $itemBling['descricao'] ?? 'Produto sem descrição',
+                        'quantidade' => $itemBling['quantidade'] ?? 1,
+                        'imagem_original' => $imagemUrl,
+                        'imagem_local' => $imagemLocal,
+                        'ordem' => $index
+                    ]);
+                }
+            }
+
+            DB::commit();
+
+            Log::info("Pedido {$pedido->numero} atualizado com " . count($pedidoBling['itens'] ?? []) . " itens");
+
+            return [
+                'status' => 'sucesso',
+                'numero' => $pedido->numero,
+                'mensagem' => 'Pedido atualizado com itens'
+            ];
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            Log::error('Erro ao atualizar pedido sem itens', [
+                'numero' => $pedido->numero,
+                'erro' => $e->getMessage()
+            ]);
+
+            return [
+                'status' => 'erro',
+                'numero' => $pedido->numero,
+                'mensagem' => 'Erro ao atualizar: ' . $e->getMessage()
             ];
         }
     }
@@ -228,20 +314,24 @@ class PedidoImportService
             'erros' => 0,
             'ja_existentes' => 0,
             'nao_encontrados' => 0,
+            'ignorados_antigos' => 0,
             'detalhes' => []
         ];
+
+        // Data limite: 30 dias atras
+        $dataLimite = Carbon::now()->subDays(30)->startOfDay();
 
         try {
             // Passar true para buscar imagens
             $dadosPedidos = $this->blingService->getOrdersByNumberRange($numeroInicial, $numeroFinal, true);
-            
+
             // Log para debug
             Log::info('Dados retornados do Bling', [
                 'total_pedidos' => count($dadosPedidos['orders'] ?? [])
             ]);
-            
+
             $pedidosBling = $dadosPedidos['orders'];
-            
+
             // Registrar números não encontrados
             foreach ($dadosPedidos['missingSequence'] as $numeroFaltante) {
                 $resultado['nao_encontrados']++;
@@ -254,8 +344,21 @@ class PedidoImportService
 
             // Importar pedidos encontrados
             foreach ($pedidosBling as $pedidoBling) {
+                // Verificar se o pedido tem mais de 30 dias
+                $dataPedido = isset($pedidoBling['data']) ? Carbon::parse($pedidoBling['data']) : Carbon::now();
+
+                if ($dataPedido->lt($dataLimite)) {
+                    $resultado['ignorados_antigos']++;
+                    $resultado['detalhes'][] = [
+                        'status' => 'ignorado',
+                        'numero' => $pedidoBling['numero'] ?? 'N/A',
+                        'mensagem' => 'Pedido com mais de 30 dias - ignorado'
+                    ];
+                    continue;
+                }
+
                 $resultadoImportacao = $this->importarPedido($pedidoBling);
-                
+
                 if ($resultadoImportacao['status'] === 'sucesso') {
                     $resultado['sucesso']++;
                 } elseif ($resultadoImportacao['status'] === 'existente') {
@@ -372,9 +475,27 @@ class PedidoImportService
     public function listarPedidosPorIntervalo(int $numeroInicial, int $numeroFinal): array
     {
         try {
-            return $this->blingService->getOrdersByNumberRange($numeroInicial, $numeroFinal);
+            // Usar método RÁPIDO para verificação (sem detalhes/imagens)
+            return $this->blingService->getOrdersByNumberRangeFast($numeroInicial, $numeroFinal);
         } catch (\Exception $e) {
             Log::error('Erro ao listar pedidos por intervalo', [
+                'erro' => $e->getMessage()
+            ]);
+            throw $e;
+        }
+    }
+
+    /**
+     * Função: listarPedidosPorIntervaloCompleto
+     * Descrição: Lista pedidos com TODOS os detalhes (mais lento).
+     * Usar apenas quando precisar importar.
+     */
+    public function listarPedidosPorIntervaloCompleto(int $numeroInicial, int $numeroFinal, bool $buscarImagens = true): array
+    {
+        try {
+            return $this->blingService->getOrdersByNumberRange($numeroInicial, $numeroFinal, $buscarImagens);
+        } catch (\Exception $e) {
+            Log::error('Erro ao listar pedidos completos por intervalo', [
                 'erro' => $e->getMessage()
             ]);
             throw $e;
@@ -395,7 +516,7 @@ class PedidoImportService
         try {
             // Buscar todos os pedidos do Bling no período
             $pedidosBling = $this->blingService->getOrdersWithProductImages($startDate, $endDate);
-            
+
             if (isset($pedidosBling['orders'])) {
                 $pedidosBling = $pedidosBling['orders'];
             }
@@ -413,6 +534,172 @@ class PedidoImportService
         } catch (\Exception $e) {
             Log::error('Erro ao listar pedidos não importados', ['erro' => $e->getMessage()]);
             throw $e;
+        }
+    }
+
+    /**
+     * Função: baixarImagemProduto
+     * Descrição: Baixa a imagem do produto do Bling e salva localmente.
+     * Parâmetros:
+     *   - url (string): URL da imagem no S3 do Bling
+     *   - numeroPedido (string): Número do pedido para organização
+     *   - itemIndex (int): Índice do item no pedido
+     * Retorno:
+     *   - string|null: Caminho relativo da imagem salva ou null se falhar
+     */
+    protected function baixarImagemProduto(string $url, string $numeroPedido, int $itemIndex): ?string
+    {
+        try {
+            Log::info('Baixando imagem do produto', [
+                'pedido' => $numeroPedido,
+                'item' => $itemIndex,
+                'url' => substr($url, 0, 100) . '...'
+            ]);
+
+            // Baixar a imagem
+            $response = Http::timeout(30)->get($url);
+
+            if (!$response->successful()) {
+                Log::warning('Falha ao baixar imagem', [
+                    'pedido' => $numeroPedido,
+                    'status' => $response->status()
+                ]);
+                return null;
+            }
+
+            // Determinar extensão pelo content-type
+            $contentType = $response->header('Content-Type');
+            $isWebp = str_contains($contentType, 'webp');
+            $isPng = str_contains($contentType, 'png');
+            $isGif = str_contains($contentType, 'gif');
+
+            // Sempre salvar como JPG para melhor compatibilidade e tamanho menor
+            $extension = 'jpg';
+
+            // Criar nome do arquivo
+            $filename = "pedidos/{$numeroPedido}/item_{$itemIndex}.{$extension}";
+
+            // Converter e comprimir a imagem para JPG
+            $imageData = $response->body();
+            $originalSize = strlen($imageData);
+
+            // Converter qualquer formato para JPG comprimido
+            if ($isWebp || $isPng || $isGif || $originalSize > 500000) {
+                $convertedData = $this->compressToJpg($imageData, 85);
+                if ($convertedData) {
+                    $newSize = strlen($convertedData);
+                    Log::info('Imagem comprimida', [
+                        'pedido' => $numeroPedido,
+                        'original' => round($originalSize / 1024) . 'KB',
+                        'comprimido' => round($newSize / 1024) . 'KB',
+                        'reducao' => round((1 - $newSize / $originalSize) * 100) . '%'
+                    ]);
+                    $imageData = $convertedData;
+                } else {
+                    Log::warning('Falha ao comprimir imagem, salvando original', ['pedido' => $numeroPedido]);
+                    // Se falhar a conversão, manter extensão original
+                    if ($isPng) $extension = 'png';
+                    elseif ($isWebp) $extension = 'webp';
+                    elseif ($isGif) $extension = 'gif';
+                    $filename = "pedidos/{$numeroPedido}/item_{$itemIndex}.{$extension}";
+                    $imageData = $response->body();
+                }
+            }
+
+            // Garantir que o diretório existe
+            Storage::disk('public')->makeDirectory("pedidos/{$numeroPedido}");
+
+            // Salvar a imagem
+            Storage::disk('public')->put($filename, $imageData);
+
+            Log::info('Imagem salva com sucesso', [
+                'pedido' => $numeroPedido,
+                'arquivo' => $filename
+            ]);
+
+            return $filename;
+
+        } catch (\Exception $e) {
+            Log::error('Erro ao baixar imagem do produto', [
+                'pedido' => $numeroPedido,
+                'erro' => $e->getMessage()
+            ]);
+            return null;
+        }
+    }
+
+    /**
+     * Converte imagem webp para jpg
+     */
+    protected function convertWebpToJpg(string $webpData): ?string
+    {
+        return $this->compressToJpg($webpData, 90);
+    }
+
+    /**
+     * Comprime e converte qualquer imagem para JPG
+     * Redimensiona se for maior que 1200px
+     */
+    protected function compressToJpg(string $imageData, int $quality = 85): ?string
+    {
+        try {
+            // Criar imagem a partir dos dados
+            $image = @imagecreatefromstring($imageData);
+
+            if (!$image) {
+                return null;
+            }
+
+            // Obter dimensões originais
+            $width = imagesx($image);
+            $height = imagesy($image);
+
+            // Redimensionar se for muito grande (max 1200px no maior lado)
+            $maxSize = 1200;
+            if ($width > $maxSize || $height > $maxSize) {
+                if ($width > $height) {
+                    $newWidth = $maxSize;
+                    $newHeight = (int) ($height * ($maxSize / $width));
+                } else {
+                    $newHeight = $maxSize;
+                    $newWidth = (int) ($width * ($maxSize / $height));
+                }
+
+                // Criar nova imagem redimensionada
+                $resized = imagecreatetruecolor($newWidth, $newHeight);
+
+                // Preservar transparência convertendo para branco
+                $white = imagecolorallocate($resized, 255, 255, 255);
+                imagefill($resized, 0, 0, $white);
+
+                // Redimensionar com alta qualidade
+                imagecopyresampled($resized, $image, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+
+                // Liberar imagem original
+                imagedestroy($image);
+                $image = $resized;
+            } else {
+                // Se não redimensionar, ainda precisa tratar transparência para PNG
+                $newImage = imagecreatetruecolor($width, $height);
+                $white = imagecolorallocate($newImage, 255, 255, 255);
+                imagefill($newImage, 0, 0, $white);
+                imagecopy($newImage, $image, 0, 0, 0, 0, $width, $height);
+                imagedestroy($image);
+                $image = $newImage;
+            }
+
+            // Criar buffer de saída
+            ob_start();
+            imagejpeg($image, null, $quality);
+            $jpgData = ob_get_clean();
+
+            // Liberar memória
+            imagedestroy($image);
+
+            return $jpgData;
+        } catch (\Exception $e) {
+            Log::warning('Erro ao comprimir imagem', ['erro' => $e->getMessage()]);
+            return null;
         }
     }
 }

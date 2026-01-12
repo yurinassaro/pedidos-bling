@@ -27,5 +27,6 @@ Artisan::command('inspire', function () {
 //     }
 // })->name('bling:refresh-token');
 
-app(Schedule::class)->daily()->command('bling:refresh-token')->name('bling:refresh-token');
+// Renova token Bling a cada 4 horas (expira em 6h)
+app(Schedule::class)->everyFourHours()->command('bling:refresh-token')->name('bling:refresh-token');
 

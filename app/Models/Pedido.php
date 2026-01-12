@@ -18,7 +18,9 @@ class Pedido extends Model
         'importado',
         'data_importacao',
         'data_producao',
-        'data_finalizacao'
+        'data_finalizacao',
+        'enviado_whatsapp',
+        'data_envio_whatsapp'
     ];
 
     protected $casts = [
@@ -26,7 +28,9 @@ class Pedido extends Model
         'data_importacao' => 'datetime',
         'data_producao' => 'datetime',
         'data_finalizacao' => 'datetime',
+        'data_envio_whatsapp' => 'datetime',
         'importado' => 'boolean',
+        'enviado_whatsapp' => 'boolean',
     ];
 
     /**
@@ -106,5 +110,32 @@ class Pedido extends Model
         $this->status = 'finalizado';
         $this->data_finalizacao = now();
         return $this->save();
+    }
+
+    /**
+     * Função: marcarEnviadoWhatsApp
+     * Descrição: Marca o pedido como enviado para o WhatsApp.
+     * Parâmetros: Nenhum
+     * Retorno:
+     *   - bool: Sucesso da operação
+     */
+    public function marcarEnviadoWhatsApp(): bool
+    {
+        $this->enviado_whatsapp = true;
+        $this->data_envio_whatsapp = now();
+        return $this->save();
+    }
+
+    /**
+     * Função: scopeNaoEnviadoWhatsApp
+     * Descrição: Scope para filtrar pedidos não enviados para WhatsApp.
+     * Parâmetros:
+     *   - query (Builder): Query builder
+     * Retorno:
+     *   - Builder: Query modificada
+     */
+    public function scopeNaoEnviadoWhatsApp($query)
+    {
+        return $query->where('enviado_whatsapp', false);
     }
 }

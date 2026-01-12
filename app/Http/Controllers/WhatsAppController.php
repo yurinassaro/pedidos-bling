@@ -2,228 +2,176 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Pedido;
+use App\Services\WApiService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
-use App\Http\Controllers\Cache;
+use Illuminate\Support\Facades\Cache;
 
 class WhatsAppController extends Controller
 {
-    protected $evolutionApiUrl;
-    protected $evolutionApiKey;
-    protected $instanceName;
-    protected $whatsappGroupId;
+    protected WApiService $wApiService;
 
-    public function __construct()
+    public function __construct(WApiService $wApiService)
     {
-        $this->evolutionApiUrl = env('EVOLUTION_API_URL', 'http://localhost:8080');
-        $this->evolutionApiKey = env('EVOLUTION_API_KEY');
-        $this->instanceName = env('EVOLUTION_INSTANCE_NAME', 'pedidos');
-        $this->whatsappGroupId = env('WHATSAPP_GROUP_ID');
+        $this->wApiService = $wApiService;
     }
 
     /**
-     * Envia o pedido para o WhatsApp - SIMPLIFICADO
-     * Sem verificação de status, sem salvar no banco
+     * Envia um pedido específico para o grupo do WhatsApp
      */
-    public function sendOrderToWhatsApp(Request $request)
+    public function sendOrder(Request $request, Pedido $pedido): JsonResponse
     {
         try {
-            $orderNumber = $request->input('order_number');
-            $customerName = $request->input('customer_name');
-            $products = $request->input('products');
-            
-            // ANTI-SPAM: Verificar se não foi enviado recentemente
-            $lockKey = "whatsapp_lock_{$orderNumber}";
+            // Anti-spam: verificar se não foi enviado recentemente
+            $lockKey = "whatsapp_lock_{$pedido->id}";
             if (Cache::has($lockKey)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Aguarde antes de reenviar'
+                    'message' => 'Aguarde 30 segundos antes de reenviar'
                 ], 429);
             }
-            
+
             // Bloquear por 30 segundos
             Cache::put($lockKey, true, 30);
 
-            // Log para debug
-            Log::info('Iniciando envio de pedido', [
-                'order' => $orderNumber,
-                'customer' => $customerName,
-                'products_count' => count($products)
+            // Carregar itens do pedido
+            $pedido->load('itens');
+
+            Log::info('WhatsAppController: Iniciando envio de pedido', [
+                'pedido_id' => $pedido->id,
+                'numero' => $pedido->numero,
+                'cliente' => $pedido->cliente_nome,
+                'itens_count' => $pedido->itens->count(),
             ]);
-            
-            // Montar mensagem
-            $uniqueId = uniqid();
-            $message = "*{$orderNumber} - {$customerName}*\n";
-            $message .= "Data: " . now()->format('d/m/Y') . "\n";
-            $message .= "ID: {$uniqueId}\n\n"; // Isso previne reenvio idêntico
-            
-            // Enviar mensagem de texto
-            $textResponse = $this->sendTextMessage($message);
 
-            if (!$textResponse['success']) {
-                Log::error('Falha ao enviar mensagem de texto', $textResponse);
-                throw new \Exception($textResponse['error'] ?? 'Falha ao enviar mensagem de texto');
-            }
+            // Preparar dados do pedido
+            // Usar APP_URL para garantir URL pública (ngrok)
+            $baseUrl = rtrim(config('app.url'), '/');
 
-            // Contador de imagens enviadas com sucesso
-            $imagesSent = 0;
-            $totalImages = 0;
-
-            // Enviar imagens dos produtos
-            foreach ($products as $product) {
-                if (!empty($product['image']) && $product['image'] !== 'INSIRA UMA FOTO') {
-                    $totalImages++;
-                    
-                    $imageMessage = "📦 *{$product['description']}*\n";
-                    $imageMessage .= "Quantidade: {$product['quantity']}";
-                    
-                    $imageResponse = $this->sendImageMessage($product['image'], $imageMessage);
-                    
-                    if ($imageResponse['success']) {
-                        $imagesSent++;
-                    } else {
-                        Log::warning('Falha ao enviar imagem', [
-                            'product' => $product['description'],
-                            'error' => $imageResponse['error'] ?? 'Unknown error'
-                        ]);
-                    }
-                    
-                    // Pequeno delay entre envios para evitar bloqueio
-                    usleep(500000); // 0.5 segundos
+            $products = [];
+            foreach ($pedido->itens as $item) {
+                // Prioridade: imagem_personalizada > imagem_local > imagem_original
+                if ($item->imagem_personalizada) {
+                    $imageUrl = $baseUrl . '/storage/' . $item->imagem_personalizada;
+                } elseif ($item->imagem_local) {
+                    $imageUrl = $baseUrl . '/storage/' . $item->imagem_local;
+                } else {
+                    $imageUrl = $item->imagem_original;
                 }
+
+                $products[] = [
+                    'description' => $item->descricao,
+                    'quantity' => number_format($item->quantidade, 0),
+                    'image' => $imageUrl,
+                ];
             }
 
-            Log::info('Envio concluído', [
-                'order' => $orderNumber,
-                'images_sent' => $imagesSent,
-                'total_images' => $totalImages
+            $orderData = [
+                'order_number' => $pedido->numero,
+                'customer_name' => $pedido->cliente_nome,
+                'order_date' => $pedido->data_pedido ? $pedido->data_pedido->format('d/m/Y') : now()->format('d/m/Y'),
+                'observations' => $pedido->observacoes_internas,
+                'products' => $products,
+            ];
+
+            // Enviar via W-API
+            $result = $this->wApiService->sendOrderToGroup($orderData);
+
+            if ($result['success']) {
+                // Marcar como enviado
+                $pedido->marcarEnviadoWhatsApp();
+
+                Log::info('WhatsAppController: Pedido enviado com sucesso', [
+                    'pedido_id' => $pedido->id,
+                    'numero' => $pedido->numero,
+                    'details' => $result['details'] ?? [],
+                ]);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Pedido enviado para o WhatsApp com sucesso!',
+                    'details' => $result['details'] ?? [],
+                    'enviado_em' => $pedido->data_envio_whatsapp?->format('d/m/Y H:i'),
+                ]);
+            }
+
+            Log::error('WhatsAppController: Falha ao enviar pedido', [
+                'pedido_id' => $pedido->id,
+                'error' => $result['error'] ?? 'Erro desconhecido',
             ]);
 
             return response()->json([
-                'success' => true,
-                'message' => 'Pedido enviado com sucesso',
-                'details' => [
-                    'text_sent' => true,
-                    'images_sent' => $imagesSent,
-                    'total_images' => $totalImages
-                ]
-            ]);
+                'success' => false,
+                'message' => 'Erro ao enviar pedido para WhatsApp',
+                'error' => $result['error'] ?? 'Erro desconhecido',
+            ], 500);
 
         } catch (\Exception $e) {
-            Log::error('Erro ao enviar pedido para WhatsApp', [
+            Log::error('WhatsAppController: Exceção ao enviar pedido', [
+                'pedido_id' => $pedido->id,
                 'error' => $e->getMessage(),
-                'order' => $orderNumber ?? 'Unknown',
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Erro ao enviar pedido',
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
 
     /**
-     * Envia mensagem de texto via Evolution API
+     * Verifica o status da conexão com a W-API
      */
-    private function sendTextMessage($text)
+    public function checkStatus(): JsonResponse
     {
         try {
-            Log::info('Enviando mensagem de texto', [
-                'group' => $this->whatsappGroupId,
-                'text_length' => strlen($text)
-            ]);
-
-            $response = Http::timeout(30)->withHeaders([
-                'apikey' => $this->evolutionApiKey,
-                'Content-Type' => 'application/json'
-            ])->post("{$this->evolutionApiUrl}/message/sendText/{$this->instanceName}", [
-                'number' => $this->whatsappGroupId,
-                'text' => $text,
-                'delay' => 0
-            ]);
-
-            Log::info('Resposta do envio de texto', [
-                'status' => $response->status(),
-                'body' => $response->body()
-            ]);
-
-            if ($response->successful()) {
-                return [
-                    'success' => true,
-                    'messageId' => $response->json('key.id') ?? null
-                ];
+            if (!$this->wApiService->isConfigured()) {
+                return response()->json([
+                    'success' => false,
+                    'configured' => false,
+                    'message' => 'W-API não configurada. Configure WAPI_TOKEN, WAPI_INSTANCE_ID e WAPI_GROUP_ID no .env',
+                ]);
             }
 
-            return [
-                'success' => false,
-                'error' => $response->body()
-            ];
+            $status = $this->wApiService->getInstanceStatus();
+
+            return response()->json([
+                'success' => $status['success'],
+                'configured' => true,
+                'connected' => $status['connected'] ?? false,
+                'data' => $status['data'] ?? null,
+                'error' => $status['error'] ?? null,
+            ]);
 
         } catch (\Exception $e) {
-            Log::error('Erro ao enviar mensagem de texto', ['error' => $e->getMessage()]);
-            return [
+            return response()->json([
                 'success' => false,
-                'error' => $e->getMessage()
-            ];
+                'message' => 'Erro ao verificar status',
+                'error' => $e->getMessage(),
+            ], 500);
         }
     }
 
     /**
-     * Envia imagem via Evolution API
+     * Lista os grupos disponíveis
      */
-    private function sendImageMessage($imageUrl, $caption = '')
+    public function listGroups(): JsonResponse
     {
         try {
-            // Verificar se a URL da imagem é válida
-            if (filter_var($imageUrl, FILTER_VALIDATE_URL) === false) {
-                Log::warning('URL de imagem inválida', ['url' => $imageUrl]);
-                return [
-                    'success' => false,
-                    'error' => 'URL de imagem inválida'
-                ];
-            }
+            $result = $this->wApiService->getGroups();
 
-            Log::info('Enviando imagem', [
-                'url' => $imageUrl,
-                'caption' => $caption
-            ]);
-
-            $response = Http::timeout(60)->withHeaders([
-                'apikey' => $this->evolutionApiKey,
-                'Content-Type' => 'application/json'
-            ])->post("{$this->evolutionApiUrl}/message/sendMedia/{$this->instanceName}", [
-                'number' => $this->whatsappGroupId,
-                'mediatype' => 'image',
-                'media' => $imageUrl,
-                'caption' => $caption
-            ]);
-
-            Log::info('Resposta do envio de imagem', [
-                'status' => $response->status(),
-                'body' => substr($response->body(), 0, 200) // Primeiros 200 caracteres
-            ]);
-
-            if ($response->successful()) {
-                return [
-                    'success' => true,
-                    'messageId' => $response->json('key.id') ?? null
-                ];
-            }
-
-            return [
-                'success' => false,
-                'error' => $response->body()
-            ];
+            return response()->json($result);
 
         } catch (\Exception $e) {
-            Log::error('Erro ao enviar imagem', ['error' => $e->getMessage()]);
-            return [
+            return response()->json([
                 'success' => false,
-                'error' => $e->getMessage()
-            ];
+                'message' => 'Erro ao listar grupos',
+                'error' => $e->getMessage(),
+            ], 500);
         }
     }
 }

@@ -28,9 +28,9 @@ class PedidoController extends Controller
             $query->where('status', $request->status);
         }
 
-        // Filtro por número (a partir de)
+        // Filtro por número (a partir de) - usar CAST para comparação numérica
         if ($request->has('numero_inicial') && $request->numero_inicial) {
-            $query->where('numero', '>=', $request->numero_inicial);
+            $query->whereRaw('CAST(numero AS UNSIGNED) >= ?', [(int) $request->numero_inicial]);
         }
 
         // Filtro por período
@@ -42,7 +42,11 @@ class PedidoController extends Controller
             $query->whereDate('data_pedido', '<=', $request->data_final);
         }
 
-        $pedidos = $query->orderBy('numero', 'asc')->paginate(12);
+        // Se tem filtro de número inicial OU status "aberto", ordena crescente
+        // Senão, ordena decrescente (mais recentes primeiro)
+        // Usar CAST para ordenação numérica correta
+        $ordem = (($request->has('numero_inicial') && $request->numero_inicial) || $request->status == 'aberto') ? 'asc' : 'desc';
+        $pedidos = $query->orderByRaw('CAST(numero AS UNSIGNED) ' . $ordem)->paginate(30);
         // Contadores para os cards de status
         $contadores = [
             'aberto' => Pedido::aberto()->count(),
@@ -78,6 +82,14 @@ class PedidoController extends Controller
      */
     public function alterarStatus(Request $request, Pedido $pedido): JsonResponse
     {
+        Log::info('alterarStatus chamado', [
+            'pedido_id' => $pedido->id,
+            'user_id' => auth()->id(),
+            'user_email' => auth()->user()->email ?? 'N/A',
+            'status_atual' => $pedido->status,
+            'novo_status' => $request->status
+        ]);
+
         $request->validate([
             'status' => 'required|in:aberto,em_producao,finalizado'
         ]);

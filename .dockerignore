@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Node
+node_modules
+npm-debug.log
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Cache e Logs (serao recriados)
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
+
+# Testes
+tests
+phpunit.xml
+
+# Docker
+docker-compose.yml
+docker-compose.override.yml
+
+# Docs
+README.md
+CHANGELOG.md
+*.md
